@@ -1,48 +1,75 @@
 # Message Board
 
-A small agent skill for coordinating multiple agents in one shared repository.
+Durable coordination for agents sharing a repository and a workstation. Built for an AI-native Omarchy/Linux workflow, with a portable Markdown skill for **Codex, OpenCode, and Claude Code**.
 
-Agents use a local, append-only `message-board.md` to claim files, acknowledge handoffs, report evidence, and agree on one Git owner. An exclusive `flock` serializes board updates. Ownership stays explicit: an assignment, timeout, or silent agent does not transfer a claim.
+The board answers: who owns this file, who can commit, what was actually verified, and who acts next? It preserves that context across sessions and clients without requiring a hosted service or a particular agent orchestrator.
 
-The full protocol lives in [SKILL.md](SKILL.md).
+- Exact file claims and acknowledged handoffs.
+- One Git owner per shared index, including all Git subtrees in that worktree.
+- Separate ownership for shared runtime resources such as a GPU or local model server.
+- An append-only **`message-board.jsonl`** plus a generated readable **`message-board.md`**.
+- A small Python helper with locking, stale-read protection, validation, and view recovery.
 
-## Install
+[Read the skill](SKILL.md) · [Client setup](references/clients.md) · [Logging](references/logging.md) · [Subtrees and worktrees](references/git-topology.md)
 
-Clone this repository into your agent’s skill directory. For a Codex installation using `~/.codex/skills`:
+## Install once, use across clients
+
+Keep the maintained checkout in your normal workspace:
 
 ```sh
-git clone https://github.com/tkarcheski/message-board.git ~/.codex/skills/message-board
+mkdir -p ~/Projects
+git clone https://github.com/tkarcheski/message-board.git ~/Projects/message-board
 ```
 
-If that directory already exists, compare it with this repository before replacing your local skill.
+Then link the skill into a discovery directory for each client you use. [Client setup](references/clients.md) lists the supported locations and commands. Keep a single source rather than three diverging copies. Existing installations should be compared before replacement.
 
-## Use
+Ask your agent to “use the message-board skill to coordinate this project with the other agents.” In Codex you can explicitly select `$message-board`; in Claude Code, `/message-board`. In OpenCode, ask it to load the `message-board` skill.
 
-Ask your agent:
+## Start a new project board
 
-```text
-Use $message-board to coordinate with the other agents working in this repository.
-Read the existing board before editing, claim exact files, and keep Git ownership explicit.
+Read existing project instructions first. Do not initialize a competing board when one already exists. In the target Git repository:
+
+```sh
+python3 ~/Projects/message-board/scripts/board.py --root . status
+python3 ~/Projects/message-board/scripts/board.py --root . append --expect EMPTY <<'JSON'
+{
+  "agent": "codex-parser-1",
+  "client": "codex",
+  "type": "CLAIM",
+  "to": ["all"],
+  "scope": ["src/parser.py"],
+  "message": "Claim parser error handling for a bounded fix; no conflicting claims exist.",
+  "verification": "Read project instructions and the empty board. Tests not run.",
+  "next": "Implement and verify the parser fix."
+}
+JSON
 ```
 
-To make the convention part of a project, add guidance to its `AGENTS.md` asking agents to read and follow the existing board before work. Keep `message-board.md` and `tmp/message-board.lock` out of published commits, using local Git excludes when appropriate.
+For subsequent entries, replace `EMPTY` with the actual last event ID you read. Review new events after a stale-head rejection. The helper does not decide whether a claim is authorized.
 
-## Example
+## Commit the log with the work
 
-This fictional exchange illustrates the workflow; it is not a transcript from a real project:
+This repository tracks and pushes [message-board.jsonl](message-board.jsonl) and [message-board.md](message-board.md). For other projects, record whether their board is versioned or private before first publication. Keep public logs concise and suitable for publication; historical private boards are not sample data.
 
-1. Agent A claims `src/parser.py` for a parser fix.
-2. Agent B claims `docs/parser.md` for the matching documentation update.
-3. Agent C requests Git ownership. The participating agents acknowledge it explicitly.
-4. A and B report the exact files changed and their verification, then acknowledge an edit pause for the commit candidate.
-5. C inspects the staged diff, verifies the candidate, commits, and posts the SHA and release of the pause.
+The acknowledged Git owner stages an agreed checkpoint of both files with named source paths, verifies the candidate, commits, and pushes when authorized. Later events record the resulting SHA and push evidence. See [checkpoint rules](references/logging.md#committing-a-checkpoint).
 
-Actual entries include a timestamp, session, type, unique ID, recipient, scope, message, verification, and next action. See the template in [SKILL.md](SKILL.md).
+## How agents cooperate
 
-## Boundaries
+A coordinator can assign bounded work, but workers must acknowledge it. Agents with non-overlapping claims work independently. A handoff records paths, evidence, open gates, and retained or released ownership. A quiet or interrupted session does not automatically lose its claims. Git subtrees share the parent's index and owner; separate worktrees have independent indexes but may still compete for the same GPU or service.
 
-This is a cooperative protocol, not a scheduler or access-control system. Every writer must use the same lock for serialized posting. The lock protects board appends; it does not enforce file claims or Git ownership. Board entries do not authorize runtime changes, external messages, or destructive actions. Keep secrets and private logs off the board, and never publish a live board as an example.
+These rules grew out of reviewing earlier multi-agent sessions: assignment without acknowledgment, stale status, competing runtime use, and confusing “tested” with “published” all need explicit handling. The [scenarios](references/scenarios.md) use fictional examples, not copied private session transcripts.
 
-## Validation
+## Requirements and checks
 
-The skill is a single Markdown file with YAML frontmatter and has no runtime dependencies. Its locked-append protocol assumes an environment providing `flock`.
+The skill itself is Markdown. The optional helper requires Python 3.10+, Git, and POSIX `flock` via Python's standard library. Omarchy/Linux is the primary target; other POSIX environments may work but are not the tested baseline. No packages, daemon, desktop changes, or API keys are needed.
+
+```sh
+cd ~/Projects/message-board
+python3 -m unittest discover -s tests -v
+python3 scripts/board.py --root . check
+git diff --check
+```
+
+Tests use isolated fixtures under this checkout's `.test-work/` and clean up their own fixtures. They never use `/tmp` or touch other projects.
+
+This is a cooperative protocol, not an access-control system or distributed lock service. Client discovery is documented against official sources; automated tests exercise the shared helper, not three live client sessions. See [client sources](references/clients.md#sources).
