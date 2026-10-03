@@ -82,7 +82,7 @@ def validate(event):
         if scope.startswith(('resource:', 'git:')):
             continue
         path = PurePosixPath(scope)
-        if path.is_absolute() or '..' in path.parts or '\\' in scope or '~' == path.parts[0]:
+        if path.is_absolute() or '..' in path.parts or '\\' in scope or (path.parts and '~' == path.parts[0]):
             raise BoardError('file scopes must be root-relative POSIX paths without ..')
     return event
 
